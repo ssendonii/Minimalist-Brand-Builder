@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {defineConfig} from 'vite';
 
-const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as {
+const pkg = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, 'package.json'), 'utf-8')) as {
   version?: string;
 };
 
@@ -16,7 +16,7 @@ export default defineConfig(() => {
     },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {
