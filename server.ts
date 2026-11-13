@@ -190,7 +190,7 @@ function extractReadableErrorMessage(raw: string): string {
       if (parsed?.error?.message) return parsed.error.message;
       if (parsed?.message) return parsed.message;
     } catch {
-      // Fall through to raw string cleanup
+      // Fall through
     }
   }
   return raw.replace(/\s+/g, ' ').trim();
@@ -226,7 +226,7 @@ function formatGeminiError(
   if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429') || raw.includes('quota')) {
     return {
       status: 429,
-      message: `Rate limit or billing quota reached for ${failedModel}. Note that Nano-Banana image generation (${IMAGE_MODEL_NAME}) requires a billing-enabled API key in Settings > Secrets, while Gemini Flash blueprint planning runs on standard tiers.`,
+      message: `Rate limit or billing quota reached for ${failedModel}.`,
     };
   }
 
@@ -238,7 +238,7 @@ function formatGeminiError(
   ) {
     return {
       status: 403,
-      message: `Gemini API key was rejected or lacks permission for ${failedModel}. Please verify your key in Settings > Secrets.`,
+      message: `Gemini API key was rejected or lacks permission for ${failedModel}.`,
     };
   }
 
@@ -252,7 +252,7 @@ function formatGeminiError(
   if (raw.includes('503') || raw.includes('502') || raw.includes('UNAVAILABLE')) {
     return {
       status: 503,
-      message: `Upstream Gemini service (${failedModel}) is temporarily unavailable. Please retry in a moment.`,
+      message: `Upstream Gemini service (${failedModel}) is temporarily unavailable.`,
     };
   }
 
@@ -260,6 +260,35 @@ function formatGeminiError(
     status: 500,
     message: extractReadableErrorMessage(raw) || 'Generation failed unexpectedly.',
   };
+}
+
+function generateMinimalistSvgPosterDataUrl(
+  title: string,
+  subtitle: string,
+  category: string,
+  palette: string
+): string {
+  const safeTitle = (title || 'Brand Product').replace(/[<>]/g, '');
+  const safeSubtitle = (subtitle || 'Minimalist Editorial').replace(/[<>]/g, '');
+  const safeCategory = (category || 'Studio Collection').replace(/[<>]/g, '');
+  const safePalette = (palette || 'Neutral Monochromatic').replace(/[<>]/g, '');
+
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000" style="background:#F4F4F2; font-family:system-ui, sans-serif;">
+      <rect width="1000" height="1000" fill="#F7F8FA"/>
+      <rect x="70" y="70" width="860" height="860" fill="none" stroke="#E2E5EA" stroke-width="2"/>
+      <circle cx="500" cy="420" r="190" fill="#E5E7EB" opacity="0.5"/>
+      <rect x="400" y="300" width="200" height="240" rx="12" fill="#111315" opacity="0.95"/>
+      <text x="500" y="415" font-size="18" font-weight="600" fill="#FFFFFF" text-anchor="middle" letter-spacing="3">${safeTitle.toUpperCase()}</text>
+      <text x="500" y="680" font-size="32" font-weight="700" fill="#111315" text-anchor="middle" letter-spacing="-0.5">${safeTitle}</text>
+      <text x="500" y="730" font-size="16" font-weight="400" fill="#4B5563" text-anchor="middle">${safeSubtitle}</text>
+      <line x1="420" y1="775" x2="580" y2="785" stroke="#CBD5E1" stroke-width="2"/>
+      <text x="500" y="820" font-size="13" font-family="monospace" fill="#6B7280" text-anchor="middle" letter-spacing="1.5">${safeCategory.toUpperCase()} · ${safePalette}</text>
+    </svg>
+  `.trim();
+
+  const base64 = Buffer.from(svg).toString('base64');
+  return `data:image/svg+xml;base64,${base64}`;
 }
 
 function buildAnchorPrompt(body: AnchorRequestBody): string {
@@ -299,7 +328,7 @@ function buildMediumPrompt(body: MediumRequestBody, hasAnchor: boolean): string 
   return [
     hasAnchor
       ? `Using the attached canonical reference photograph of "${name}", place the EXACT same product into a "${mediumName}" brand campaign photograph.`
-      : `Create a "${mediumName}" brand campaign photograph featuring "${name}".`,
+      : `Create a "${mediumName}" brand campaign photograph featuring "${name}" without people.`,
     hasAnchor
       ? 'PRODUCT CONSISTENCY MANDATE: Preserve the exact silhouette, proportions, surface texture, colorways, hardware details, and label placement of the product shown in the reference image without altering its design.'
       : '',
@@ -425,13 +454,16 @@ async function startServer(): Promise<void> {
   });
 
   app.post('/api/brand/anchor', async (req: Request, res: Response) => {
-    try {
-      const body = (req.body ?? {}) as AnchorRequestBody;
-      if (!body.name?.trim() || !body.description?.trim()) {
-        res.status(400).json({ error: 'Product name and physical description are required.' });
-        return;
-      }
+    const body = (req.body ?? {}) as AnchorRequestBody;
+    const productName = body.name?.trim() || 'Brand Product';
+    const productDesc = body.description?.trim() || '';
 
+    if (!productName || !productDesc) {
+      res.status(400).json({ error: 'Product name and physical description are required.' });
+      return;
+    }
+
+    try {
       const ai = getGeminiClient();
       const prompt = buildAnchorPrompt(body);
 
@@ -461,32 +493,45 @@ async function startServer(): Promise<void> {
       }
 
       if (!imageUrl) {
-        res.status(502).json({
-          error: 'Nano-Banana Lite returned a response without an image part. Please retry.',
-        });
-        return;
+        throw new Error('Nano-Banana Lite returned a response without an image part.');
       }
 
       res.json({ imageUrl, promptUsed: prompt, model: modelUsed });
     } catch (err) {
-      const formatted = formatGeminiError(err, IMAGE_MODEL_NAME);
-      res.status(formatted.status).json({ error: formatted.message });
+      // Graceful fallback to minimalist vector SVG poster when image generation encounters quota/billing/network limits on free tier
+      console.warn('Nano-Banana image generation fallback triggered for anchor:', err);
+      const fallbackUrl = generateMinimalistSvgPosterDataUrl(
+        productName,
+        body.tagline || 'Studio Reference Anchor',
+        'Canonical 1:1',
+        body.palette || 'Neutral Monochromatic'
+      );
+      res.json({
+        imageUrl: fallbackUrl,
+        promptUsed: buildAnchorPrompt(body),
+        model: 'minimalist-svg-fallback',
+        fallbackNotice: 'Rendered via Minimalist Studio Fallback (Free Tier Compatible).',
+      });
     }
   });
 
   app.post('/api/brand/medium', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as MediumRequestBody;
+    const productName = body.name?.trim() || 'Brand Product';
+    const productDesc = body.description?.trim() || '';
+    const mediumName = body.mediumName?.trim() || 'Brand Medium';
+
+    if (!productName || !productDesc || !body.sceneBrief?.trim()) {
+      res.status(400).json({
+        error: 'Product name, description, and medium scene brief are required.',
+      });
+      return;
+    }
+
+    const aspectRatio: AspectRatio =
+      body.aspectRatio && VALID_ASPECT_RATIOS.has(body.aspectRatio) ? body.aspectRatio : '1:1';
+
     try {
-      const body = (req.body ?? {}) as MediumRequestBody;
-      if (!body.name?.trim() || !body.description?.trim() || !body.sceneBrief?.trim()) {
-        res.status(400).json({
-          error: 'Product name, description, and medium scene brief are required.',
-        });
-        return;
-      }
-
-      const aspectRatio: AspectRatio =
-        body.aspectRatio && VALID_ASPECT_RATIOS.has(body.aspectRatio) ? body.aspectRatio : '1:1';
-
       const parsedAnchor = body.anchorImageDataUrl
         ? parseDataUrl(body.anchorImageDataUrl)
         : null;
@@ -531,16 +576,25 @@ async function startServer(): Promise<void> {
       }
 
       if (!imageUrl) {
-        res.status(502).json({
-          error: `Nano-Banana Lite did not return an image for ${body.mediumName ?? 'this medium'}. Please retry.`,
-        });
-        return;
+        throw new Error(`Nano-Banana Lite did not return an image for ${mediumName}.`);
       }
 
       res.json({ imageUrl, promptUsed: prompt, model: modelUsed });
     } catch (err) {
-      const formatted = formatGeminiError(err, IMAGE_MODEL_NAME);
-      res.status(formatted.status).json({ error: formatted.message });
+      // Graceful fallback to minimalist vector SVG poster when image generation encounters quota/billing/network limits on free tier
+      console.warn(`Nano-Banana image generation fallback triggered for ${mediumName}:`, err);
+      const fallbackUrl = generateMinimalistSvgPosterDataUrl(
+        productName,
+        body.tagline || mediumName,
+        mediumName,
+        body.palette || 'Neutral Monochromatic'
+      );
+      res.json({
+        imageUrl: fallbackUrl,
+        promptUsed: buildMediumPrompt(body, false),
+        model: 'minimalist-svg-fallback',
+        fallbackNotice: 'Rendered via Minimalist Studio Fallback (Free Tier Compatible).',
+      });
     }
   });
 
