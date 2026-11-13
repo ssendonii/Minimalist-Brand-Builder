@@ -1,0 +1,6 @@
+{
+  "name": "Brand Builder",
+  "description": "Minimalist multi-medium brand campaign studio powered by Nano-Banana Flash for consistent, people-free product imagery across billboards, newspapers, social posts, and print.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
